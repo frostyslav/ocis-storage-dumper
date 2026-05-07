@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocis-storage-dumper"
+version = "4.0.0"
+description = "Dump and inspect files from OCIS storage into a standard POSIX directory structure"
+requires-python = ">=3.10"
+dependencies = [
+    "msgpack==1.1.2",
+    "tqdm==4.67.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pytest-cov>=4.1",
+    "mypy>=1.10",
+    "types-tqdm>=4.66",
+]
+
+[project.scripts]
+ocis-dump = "ocis_dumper.dump:main"
+ocis-mpkview = "ocis_dumper.mpkview:main"
+ocis-symlink-verify = "ocis_dumper.symlink_verify:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+exclude = [
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "venv",
+]
+line-length = 88
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "YTT", "ANN", "ASYNC", "S", "BLE", "FBT", "B", "A", "COM", "C4",
+    "DTZ", "T10", "EM", "EXE", "FIX", "FA", "INT", "ISC", "ICN", "LOG",
+    "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF",
+    "SIM", "SLOT", "TID", "TD", "TC", "ARG", "PTH", "FLY", "I", "C90",
+    "NPY", "PD", "N", "PERF", "E", "W", "D", "F", "PGH", "PL", "UP",
+    "FURB", "RUF", "TRY",
+]
+ignore = ["D203", "D213", "E501", "COM812"]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "D", "ANN", "PLR2004", "PLR0913", "PLC0415", "RUF059", "SIM117", "TC003"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = false
+docstring-code-line-length = "dynamic"
