@@ -28,3 +28,10 @@ hooks = [
   { id = "ruff-check", args = ["--fix"] },
   { id = "ruff-format" },
 ]
+
+[[repos]]
+repo = "https://github.com/pre-commit/mirrors-mypy"
+rev = "v2.0.0"
+hooks = [
+  { id = "mypy", additional_dependencies = ["msgpack-types"], args = ["--ignore-missing-imports"] },
+]
