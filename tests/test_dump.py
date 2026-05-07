@@ -88,7 +88,7 @@ class TestSpaceInfo:
 
     def test_defaults_for_missing_keys(self) -> None:
         """Missing keys fall back to N/A or 0."""
-        mpk_data = {}
+        mpk_data: dict[bytes, bytes] = {}
         name, stype, size, unit, user = _space_info(mpk_data)
         assert name == "N/A"
         assert stype == "N/A"
@@ -412,6 +412,7 @@ class TestBuildParser:
         assert args.verbose is False
         assert args.quiet is False
         assert args.info is False
+        assert args.storage_prefix == "storage/users/spaces"
 
     def test_all_flags(self) -> None:
         from ocis_dumper.dump import _build_parser
@@ -444,6 +445,13 @@ class TestBuildParser:
         assert args.username == "jdoe"
         assert args.jobs == 8
         assert args.verbose is True
+
+    def test_custom_storage_prefix(self) -> None:
+        from ocis_dumper.dump import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["--storage-prefix", "custom/path"])
+        assert args.storage_prefix == "custom/path"
 
 
 # ---------------------------------------------------------------------------
@@ -578,13 +586,540 @@ class TestMainFunction:
                 main()
 
     def test_info_mode_runs(self, tmp_path: Path) -> None:
-        """Info mode with no matching spaces completes without error."""
+        """Info mode shows space info without processing files."""
+        from ocis_dumper.common import fourslashes
         from ocis_dumper.dump import main
 
-        storage = tmp_path / "storage" / "users" / "spaces"
-        storage.mkdir(parents=True)
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
 
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        _write_mpk(
+            root_mpk,
+            {
+                b"user.ocis.space.name": b"TestUser",
+                b"user.ocis.space.alias": b"personal/testuser",
+                b"user.ocis.space.type": b"personal",
+                b"user.ocis.treesize": b"1024",
+            },
+        )
+
+        with patch("sys.argv", ["dump", str(tmp_path), str(tmp_path / "out"), "-i"]):
+            main()
+
+    def test_full_run_with_space(self, tmp_path: Path) -> None:
+        """End-to-end run that discovers a space and copies files."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        # Create a fake OCIS structure
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        # Create root node mpk
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        _write_mpk(
+            root_mpk,
+            {
+                b"user.ocis.space.name": b"TestUser",
+                b"user.ocis.space.alias": b"personal/testuser",
+                b"user.ocis.space.type": b"personal",
+                b"user.ocis.treesize": b"1024",
+            },
+        )
+
+        # Create a file node
+        file_node_id = "1111111122222222333333334444444a"
+        blob_id = "eeeeeeee11111111aaaaaaaa22222222"
+        file_node_path = nodes_dir / fourslashes(file_node_id)
+        file_node_path.mkdir(parents=True, exist_ok=True)
+        file_mpk = Path(f"{file_node_path}.mpk")
+        _write_mpk(
+            file_mpk,
+            {
+                b"user.ocis.parentid": space_id.encode(),
+                b"user.ocis.blobid": blob_id.encode(),
+                b"user.ocis.name": b"hello.txt",
+            },
+        )
+
+        # Create the blob
+        blob_path = space_dir / "blobs" / fourslashes(blob_id)
+        blob_path.parent.mkdir(parents=True)
+        blob_path.write_bytes(b"hello world")
+
+        outdir = tmp_path / "output"
+        with patch("sys.argv", ["dump", str(tmp_path), str(outdir), "-q"]):
+            main()
+
+        # Verify the file was copied
+        expected = outdir / "personal" / "testuser" / "hello.txt"
+        assert expected.exists()
+        assert expected.read_bytes() == b"hello world"
+
+    def test_verbose_mode(self, tmp_path: Path) -> None:
+        """Verbose mode logs file operations."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        _write_mpk(
+            root_mpk,
+            {
+                b"user.ocis.space.name": b"TestUser",
+                b"user.ocis.space.alias": b"personal/testuser",
+                b"user.ocis.space.type": b"personal",
+                b"user.ocis.treesize": b"1024",
+            },
+        )
+
+        file_node_id = "1111111122222222333333334444444a"
+        blob_id = "eeeeeeee11111111aaaaaaaa22222222"
+        file_node_path = nodes_dir / fourslashes(file_node_id)
+        file_node_path.mkdir(parents=True, exist_ok=True)
+        file_mpk = Path(f"{file_node_path}.mpk")
+        _write_mpk(
+            file_mpk,
+            {
+                b"user.ocis.parentid": space_id.encode(),
+                b"user.ocis.blobid": blob_id.encode(),
+                b"user.ocis.name": b"hello.txt",
+            },
+        )
+
+        blob_path = space_dir / "blobs" / fourslashes(blob_id)
+        blob_path.parent.mkdir(parents=True)
+        blob_path.write_bytes(b"hello world")
+
+        outdir = tmp_path / "output"
+        with patch("sys.argv", ["dump", str(tmp_path), str(outdir), "-v"]):
+            main()
+
+    def test_user_filter_skips_space(self, tmp_path: Path) -> None:
+        """User filter skips non-matching spaces."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        _write_mpk(
+            root_mpk,
+            {
+                b"user.ocis.space.name": b"TestUser",
+                b"user.ocis.space.alias": b"personal/testuser",
+                b"user.ocis.space.type": b"personal",
+                b"user.ocis.treesize": b"0",
+            },
+        )
+
+        outdir = tmp_path / "output"
         with patch(
-            "sys.argv", ["dump", str(tmp_path), str(tmp_path / "out"), "-i", "-q"]
+            "sys.argv", ["dump", str(tmp_path), str(outdir), "-u", "nobody", "-q"]
         ):
+            main()
+
+        assert not outdir.exists()
+
+    def test_corrupt_root_mpk_skipped(self, tmp_path: Path) -> None:
+        """Spaces with corrupt root MPK are skipped."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        root_mpk.write_text("not valid msgpack")
+
+        outdir = tmp_path / "output"
+        with patch("sys.argv", ["dump", str(tmp_path), str(outdir), "-q"]):
+            main()
+
+    def test_dry_run_with_space(self, tmp_path: Path) -> None:
+        """Dry run reports what would be copied without writing."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        root_mpk = Path(f"{root_node_path}.mpk")
+        _write_mpk(
+            root_mpk,
+            {
+                b"user.ocis.space.name": b"TestUser",
+                b"user.ocis.space.alias": b"personal/testuser",
+                b"user.ocis.space.type": b"personal",
+                b"user.ocis.treesize": b"1024",
+            },
+        )
+
+        file_node_id = "1111111122222222333333334444444a"
+        blob_id = "eeeeeeee11111111aaaaaaaa22222222"
+        file_node_path = nodes_dir / fourslashes(file_node_id)
+        file_node_path.mkdir(parents=True, exist_ok=True)
+        file_mpk = Path(f"{file_node_path}.mpk")
+        _write_mpk(
+            file_mpk,
+            {
+                b"user.ocis.parentid": space_id.encode(),
+                b"user.ocis.blobid": blob_id.encode(),
+                b"user.ocis.name": b"hello.txt",
+            },
+        )
+
+        blob_path = space_dir / "blobs" / fourslashes(blob_id)
+        blob_path.parent.mkdir(parents=True)
+        blob_path.write_bytes(b"hello world")
+
+        outdir = tmp_path / "output"
+        with patch("sys.argv", ["dump", str(tmp_path), str(outdir), "-n"]):
+            main()
+
+        # Dry run should not create output
+        assert not (outdir / "personal" / "testuser" / "hello.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _resolve_parent_path edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestResolveParentPath:
+    """Tests for parent path resolution edge cases."""
+
+    def test_circular_reference(self, tmp_path: Path) -> None:
+        """Circular parent references are detected and broken."""
+        from ocis_dumper.dump import _resolve_parent_path
+
+        nodes_dir = tmp_path / "nodes"
+        space_id = "aabbccdd11223344aabbccdd11223344"
+
+        # Create two nodes that point to each other
+        node_a_id = "aaaa111122223333444455556666777a"
+        node_b_id = "bbbb111122223333444455556666777a"
+
+        from ocis_dumper.common import fourslashes
+
+        node_a_path = nodes_dir / fourslashes(node_a_id)
+        node_a_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{node_a_path}.mpk"),
+            {
+                b"user.ocis.parentid": node_b_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"folderA",
+            },
+        )
+
+        node_b_path = nodes_dir / fourslashes(node_b_id)
+        node_b_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{node_b_path}.mpk"),
+            {
+                b"user.ocis.parentid": node_a_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"folderB",
+            },
+        )
+
+        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
+        parent_name_cache: dict[str, str] = {}
+
+        result = _resolve_parent_path(
+            node_a_id, space_id, nodes_dir, mpk_cache, parent_name_cache
+        )
+        # Should not infinite loop; returns partial path
+        assert "folderA" in result or "folderB" in result
+
+    def test_missing_parent_mpk(self, tmp_path: Path) -> None:
+        """Missing parent MPK logs warning and returns partial path."""
+        from ocis_dumper.dump import _resolve_parent_path
+
+        nodes_dir = tmp_path / "nodes"
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        missing_parent_id = "dead111122223333444455556666777a"
+
+        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
+        parent_name_cache: dict[str, str] = {}
+
+        result = _resolve_parent_path(
+            missing_parent_id, space_id, nodes_dir, mpk_cache, parent_name_cache
+        )
+        assert result == "."
+
+    def test_parent_is_space_root(self, tmp_path: Path) -> None:
+        """Parent that equals space_id returns '.'."""
+        from ocis_dumper.dump import _resolve_parent_path
+
+        nodes_dir = tmp_path / "nodes"
+        space_id = "aabbccdd11223344aabbccdd11223344"
+
+        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
+        parent_name_cache: dict[str, str] = {}
+
+        result = _resolve_parent_path(
+            space_id, space_id, nodes_dir, mpk_cache, parent_name_cache
+        )
+        assert result == "."
+
+
+# ---------------------------------------------------------------------------
+# Tests for _find_space_nodes
+# ---------------------------------------------------------------------------
+
+
+class TestFindSpaceNodes:
+    """Tests for space node discovery."""
+
+    def test_finds_nodes_dirs(self, tmp_path: Path) -> None:
+        """Discovers nodes directories at the expected depth."""
+        from ocis_dumper.dump import _find_space_nodes
+
+        nodes1 = tmp_path / "part1" / "part2" / "nodes"
+        nodes1.mkdir(parents=True)
+        nodes2 = tmp_path / "part3" / "part4" / "nodes"
+        nodes2.mkdir(parents=True)
+
+        result = list(_find_space_nodes(tmp_path))
+        assert len(result) == 2
+
+    def test_ignores_wrong_depth(self, tmp_path: Path) -> None:
+        """Nodes at wrong depth are not discovered."""
+        from ocis_dumper.dump import _find_space_nodes
+
+        # Only one level deep (should be two)
+        wrong = tmp_path / "part1" / "nodes"
+        wrong.mkdir(parents=True)
+
+        result = list(_find_space_nodes(tmp_path))
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests for _log_summary
+# ---------------------------------------------------------------------------
+
+
+class TestLogSummary:
+    """Tests for summary logging."""
+
+    def test_summary_with_bytes(self, caplog) -> None:
+        """Summary includes data transferred when bytes_copied > 0."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _log_summary
+
+        stats = _CopyStats()
+        stats.copied = 5
+        stats.skipped = 2
+        stats.errors = 0
+        stats.folders = 1
+        stats.bytes_copied = 5 * 1024 * 1024  # 5 MiB
+        stats.elapsed = 1.5
+
+        with caplog.at_level(logging.INFO):
+            _log_summary(stats)
+
+        assert "5.0" in caplog.text
+        assert "MiB" in caplog.text
+
+    def test_summary_without_bytes(self, caplog) -> None:
+        """Summary omits data line when nothing was copied."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _log_summary
+
+        stats = _CopyStats()
+        stats.copied = 0
+        stats.skipped = 3
+        stats.elapsed = 0.5
+
+        with caplog.at_level(logging.INFO):
+            _log_summary(stats)
+
+        assert "Data:" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests for _execute_copies with verbose and error paths
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteCopiesVerbose:
+    """Tests for verbose and error paths in _execute_copies."""
+
+    def test_verbose_logs_saved(self, tmp_path: Path, caplog) -> None:
+        """Verbose mode logs 'Saved' for copied files."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "blob"
+        src.write_bytes(b"data")
+        dst = tmp_path / "out" / "file.txt"
+
+        args = _make_fake_args(jobs=1, verbose=True, quiet=False)
+        stats = _CopyStats()
+
+        with caplog.at_level(logging.DEBUG):
+            _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert stats.copied == 1
+        assert stats.bytes_copied == 4
+
+    def test_verbose_logs_skipped(self, tmp_path: Path, caplog) -> None:
+        """Verbose mode logs 'Skipped' for unchanged files."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "blob"
+        src.write_bytes(b"data")
+        dst = tmp_path / "out" / "file.txt"
+        dst.parent.mkdir(parents=True)
+        shutil.copy2(src, dst)
+
+        args = _make_fake_args(jobs=1, verbose=True, quiet=False)
+        stats = _CopyStats()
+
+        with caplog.at_level(logging.DEBUG):
+            _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert stats.skipped == 1
+
+    def test_error_on_bad_source(self, tmp_path: Path) -> None:
+        """Error status is counted when source doesn't exist."""
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "nonexistent"
+        dst = tmp_path / "out" / "file.txt"
+
+        args = _make_fake_args(jobs=1, quiet=True)
+        stats = _CopyStats()
+        _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert stats.errors == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for timeout handling in _execute_copies
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteCopiesTimeout:
+    """Tests for timeout handling in _execute_copies."""
+
+    def test_timeout_increments_errors(self, tmp_path: Path) -> None:
+        """A timed-out future increments the error counter."""
+        from concurrent.futures import Future
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
+
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "blob"
+        src.write_bytes(b"data")
+        dst = tmp_path / "out" / "file.txt"
+
+        args = _make_fake_args(jobs=1, quiet=True)
+        stats = _CopyStats()
+
+        # Create a mock future that raises TimeoutError
+        mock_future = MagicMock(spec=Future)
+        mock_future.result.side_effect = FutureTimeoutError()
+
+        with mock_patch("ocis_dumper.dump.ThreadPoolExecutor") as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value.__enter__ = MagicMock(return_value=mock_pool)
+            mock_pool_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_pool.submit.return_value = mock_future
+
+            with mock_patch(
+                "ocis_dumper.dump.as_completed", return_value=iter([mock_future])
+            ):
+                with mock_patch(
+                    "ocis_dumper.dump.tqdm", side_effect=lambda x, **_kw: x
+                ):
+                    _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert stats.errors == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for main() with missing root mpk (debug log path)
+# ---------------------------------------------------------------------------
+
+
+class TestMainMissingRootMpk:
+    """Tests for main() when root mpk is missing entirely."""
+
+    def test_missing_root_mpk_skipped(self, tmp_path: Path) -> None:
+        """Spaces with no root MPK file at all are skipped."""
+        from ocis_dumper.common import fourslashes
+        from ocis_dumper.dump import main
+
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        space_part1 = space_id[:16]
+        space_part2 = space_id[16:]
+        spaces_dir = tmp_path / "storage" / "users" / "spaces"
+        space_dir = spaces_dir / space_part1 / space_part2
+        nodes_dir = space_dir / "nodes"
+        nodes_dir.mkdir(parents=True)
+
+        # Create the node directory structure but NO mpk file
+        root_node_path = nodes_dir / fourslashes(space_id)
+        root_node_path.mkdir(parents=True, exist_ok=True)
+        # Deliberately don't create any .mpk file
+
+        outdir = tmp_path / "output"
+        with patch("sys.argv", ["dump", str(tmp_path), str(outdir), "-v"]):
             main()

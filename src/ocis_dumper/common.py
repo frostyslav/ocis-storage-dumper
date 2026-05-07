@@ -17,12 +17,12 @@ _MIB = 1024**2
 _GIB = 1024**3
 
 
-def fourslashes(s: str | bytes) -> str:
+def fourslashes(s: str | bytes | None) -> str:
     """Split an OCIS node ID into the 2/2/2/2/rest directory structure.
 
     Parameters
     ----------
-    s : str | bytes
+    s : str | bytes | None
         The node ID to split.
 
     Returns

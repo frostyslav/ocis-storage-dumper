@@ -200,3 +200,13 @@ class TestFormatSize:
     def test_boundary_gib(self) -> None:
         """Exactly 1 GiB."""
         assert format_size(1024**3) == ("1.0", "GiB")
+
+    def test_parent_glob_oserror(self, tmp_path: Path) -> None:
+        """OSError during parent glob falls through to FileNotFoundError."""
+        # Create a node path whose parent doesn't allow globbing
+        node_path = tmp_path / "restricted" / "node"
+        node_path.parent.mkdir(parents=True)
+
+        # No .mpk files exist and trivial path doesn't exist
+        with pytest.raises(FileNotFoundError, match="No mpk file found"):
+            find_mpk(node_path)
