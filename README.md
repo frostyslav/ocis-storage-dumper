@@ -1,5 +1,12 @@
 # OCIS Storage Dump Utility
 
+[![CI](https://github.com/frostyslav/ocis-storage-dumper/actions/workflows/ci.yml/badge.svg)](https://github.com/frostyslav/ocis-storage-dumper/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)](https://github.com/frostyslav/ocis-storage-dumper/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![mypy](https://img.shields.io/badge/type--checked-mypy-blue)](https://mypy-lang.org/)
+[![License](https://img.shields.io/github/license/frostyslav/ocis-storage-dumper)](https://github.com/frostyslav/ocis-storage-dumper/blob/main/LICENSE)
+
 Extract files from an OCIS instance (personal or project spaces) into a standard POSIX directory structure. The tool walks the OCIS storage, resolves the node/blob relationships, and copies files into a human-readable tree.
 
 Key features:
@@ -19,18 +26,16 @@ Key features:
 
 ```bash
 # Create venv and install
-uv venv
-source .venv/bin/activate
-uv pip install .
+uv sync
 
-# With dev dependencies (pytest)
-uv pip install ".[dev]"
+# With dev dependencies (pytest, mypy, coverage)
+uv sync --extra dev
 ```
 
 ## Usage
 
 ```bash
-python dump.py [topdir] [outdir] [options]
+ocis-dump [topdir] [outdir] [options]
 ```
 
 | Flag | Description |
@@ -46,31 +51,32 @@ python dump.py [topdir] [outdir] [options]
 | `-j, --jobs N` | Parallel copy threads (default: 4) |
 | `-v, --verbose` | Show all file operations |
 | `-q, --quiet` | Only show errors and summary |
+| `--storage-prefix PATH` | Custom storage path (default: `storage/users/spaces`) |
 
 ### Examples
 
 Dump all files to the current directory:
 
 ```bash
-python dump.py /srv/ocis ./backup
+ocis-dump /srv/ocis ./backup
 ```
 
 List files for a specific user without copying:
 
 ```bash
-python dump.py -l -u "John Doe"
+ocis-dump -l -u "John Doe"
 ```
 
 Dry-run to see what would change:
 
 ```bash
-python dump.py /srv/ocis ./backup --dry-run
+ocis-dump /srv/ocis ./backup --dry-run
 ```
 
 Force a full re-dump:
 
 ```bash
-python dump.py /srv/ocis ./backup --force
+ocis-dump /srv/ocis ./backup --force
 ```
 
 ## Docker
@@ -86,44 +92,66 @@ docker run --rm \
 
 ## Other Tools
 
-### mpkview.py
+### ocis-mpkview
 
 Inspect the decoded contents of `.mpk` (MessagePack) metadata files:
 
 ```bash
 # View a single file
-python mpkview.py path/to/node.mpk
+ocis-mpkview path/to/node.mpk
 
 # Search a directory for all mpk files
-python mpkview.py /srv/ocis/storage -s
+ocis-mpkview /srv/ocis/storage -s
 
 # Write output to file
-python mpkview.py node.mpk -o output.txt
+ocis-mpkview node.mpk -o output.txt
 ```
 
-### symlink_verify.py
+### ocis-symlink-verify
 
 Verify (and optionally repair) the internal symlink tree OCIS uses:
 
 ```bash
 # Check user data symlinks
-python symlink_verify.py /srv/ocis --data
+ocis-symlink-verify /srv/ocis --data
 
 # Check and fix metadata symlinks
-python symlink_verify.py /srv/ocis --metadata --fix
+ocis-symlink-verify /srv/ocis --metadata --fix
 ```
 
 ## Development
 
 ```bash
-# Install with dev deps (editable)
-uv pip install -e ".[dev]"
+# Install with dev deps
+uv sync --extra dev
 
 # Run tests
-pytest
+uv run pytest
 
-# Run linting (via pre-commit)
-pre-commit run --all-files
+# Run tests with coverage
+uv run pytest --cov=ocis_dumper --cov-report=term-missing
+
+# Run type checking
+uv run mypy src/
+
+# Run linting and formatting (via prek)
+prek run --all-files
+```
+
+### Pre-commit Hooks (prek)
+
+This project uses [prek](https://github.com/frostyslav/prek) for pre-commit checks. The configuration is in `prek.toml` and includes:
+
+- File hygiene (trailing whitespace, EOF, merge conflicts, large files)
+- Ruff linting and formatting
+- Mypy type checking
+
+```bash
+# Run all checks
+prek run --all-files
+
+# Install as git hook
+prek install
 ```
 
 ### Project Structure
@@ -135,11 +163,21 @@ pre-commit run --all-files
 │   ├── dump.py           # Main dump tool
 │   ├── mpkview.py        # MPK file viewer
 │   └── symlink_verify.py # Symlink repair tool
-├── tests/                # Unit tests
+├── tests/                # Unit tests (143 tests, 96% coverage)
+├── .github/workflows/    # CI pipeline (lint, test, typecheck)
 ├── pyproject.toml        # Package config, deps, ruff, pytest
+├── prek.toml             # Pre-commit hook configuration
 ├── Dockerfile
 └── README.md
 ```
+
+### CI Pipeline
+
+The GitHub Actions CI runs on every push and PR to `main`:
+
+- **lint** — Ruff linting and formatting checks
+- **test** — pytest with coverage across Python 3.10, 3.11, 3.12
+- **typecheck** — mypy strict type checking
 
 ## MPK File Structure
 
@@ -180,4 +218,4 @@ Use `ocis-mpkview` to inspect these files directly.
 
 ## Contributing
 
-Contributions are welcome. Please run `pre-commit run --all-files` and `pytest` before submitting a PR.
+Contributions are welcome. Please run `prek run --all-files` and `uv run pytest` before submitting a PR.

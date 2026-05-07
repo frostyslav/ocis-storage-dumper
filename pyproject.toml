@@ -7,6 +7,7 @@ name = "ocis-storage-dumper"
 version = "4.0.0"
 description = "Dump and inspect files from OCIS storage into a standard POSIX directory structure"
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
     "msgpack==1.1.2",
     "tqdm==4.67.3",
