@@ -181,14 +181,34 @@ def _gen_node_info(nodes_path: Path) -> tuple[Path, str, Path]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_parent_path(
-    parent_id: str,
-    space_id: str,
-    nodes_dir: Path,
-    mpk_cache: dict[Path, tuple[str | None, str, str]],
-    parent_name_cache: dict[str, str],
-) -> str:
+@dataclass
+class _PathResolver:
+    """Bundles caches used during parent path resolution."""
+
+    space_id: str
+    nodes_dir: Path
+    mpk_cache: dict[Path, tuple[str | None, str, str]] = field(default_factory=dict)
+    parent_name_cache: dict[str, str] = field(default_factory=dict)
+    resolved_path_cache: dict[str, str] = field(default_factory=dict)
+
+    def resolve(self, parent_id: str) -> str:
+        """Resolve the full relative path for a given parent node ID.
+
+        Returns
+        -------
+        str
+            The relative path from the space root to the parent directory.
+
+        """
+        return _resolve_parent_path(self, parent_id)
+
+
+def _resolve_parent_path(resolver: _PathResolver, parent_id: str) -> str:
     """Walk up the parent chain iteratively to build the relative path.
+
+    Uses the resolver's caches to short-circuit when an ancestor's full path
+    has already been computed. Intermediate nodes are also cached so that
+    siblings and cousins resolve in O(1) on subsequent calls.
 
     Returns
     -------
@@ -196,33 +216,80 @@ def _resolve_parent_path(
         The relative path from the space root to the parent directory.
 
     """
-    parts: list[str] = []
+    cache = resolver.resolved_path_cache
+
+    # Fast path: already resolved this exact parent
+    if parent_id in cache:
+        return cache[parent_id]
+
+    # Collect names bottom-up until we hit the space root or a cached ancestor
+    names: list[str] = []
+    chain_ids: list[str] = []
     current_id: str | None = parent_id
     seen: set[str] = set()
+    prefix = "."
 
-    while current_id and current_id != space_id:
+    while current_id and current_id != resolver.space_id:
+        if current_id in cache:
+            prefix = cache[current_id]
+            break
+
         if current_id in seen:
             logger.warning("Circular parent reference at node %s", current_id)
             break
         seen.add(current_id)
+        chain_ids.append(current_id)
 
-        parent_node_path = Path(nodes_dir, fourslashes(current_id))
+        parent_node_path = Path(resolver.nodes_dir, fourslashes(current_id))
         try:
             parent_mpk_path = find_mpk(parent_node_path)
-            pid, _, pname = _cached_mpk_info(parent_mpk_path, mpk_cache)
+            pid, _, pname = _cached_mpk_info(parent_mpk_path, resolver.mpk_cache)
         except (FileNotFoundError, ValueError):
             logger.warning("Unresolvable parent %s in node chain", current_id)
             break
 
-        if current_id not in parent_name_cache:
-            parent_name_cache[current_id] = pname
-        parts.append(pname)
+        if current_id not in resolver.parent_name_cache:
+            resolver.parent_name_cache[current_id] = pname
+        names.append(pname)
         current_id = pid
 
-    if not parts:
-        return "."
-    parts.reverse()
-    return "./" + "/".join(parts)
+    # Build the full path: prefix + reversed names (root-first order)
+    result = _assemble_path(prefix, names)
+    cache[parent_id] = result
+
+    # Cache intermediate nodes so siblings/cousins resolve instantly
+    _cache_intermediates(cache, chain_ids, names, prefix)
+
+    return result
+
+
+def _assemble_path(prefix: str, names: list[str]) -> str:
+    """Combine a prefix path with a list of names (mutates names by reversing)."""
+    if not names:
+        return prefix
+    names.reverse()
+    if prefix == ".":
+        return "./" + "/".join(names)
+    return prefix + "/" + "/".join(names)
+
+
+def _cache_intermediates(
+    cache: dict[str, str],
+    chain_ids: list[str],
+    names: list[str],
+    prefix: str,
+) -> None:
+    """Cache resolved paths for intermediate nodes in the chain."""
+    for i in range(1, len(chain_ids)):
+        node_id = chain_ids[i]
+        if node_id not in cache:
+            sub_names = names[: len(names) - i]
+            if not sub_names:
+                cache[node_id] = prefix
+            elif prefix == ".":
+                cache[node_id] = "./" + "/".join(sub_names)
+            else:
+                cache[node_id] = prefix + "/" + "/".join(sub_names)
 
 
 def _cached_mpk_info(
@@ -260,6 +327,12 @@ def _build_file_tree(
     """
     parent_name_cache: dict[str, str] = {}
     mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
+    resolver = _PathResolver(
+        space_id=space_id,
+        nodes_dir=nodes_dir,
+        mpk_cache=mpk_cache,
+        parent_name_cache=parent_name_cache,
+    )
     files: dict[str, tuple[str, str]] = {}
 
     for mpk_path in tqdm(node_mpks, leave=False, desc="Building file tree"):
@@ -276,9 +349,7 @@ def _build_file_tree(
         if parent_id == space_id:
             files[name] = (".", blob_id)
         elif parent_id is not None:
-            rel_path = _resolve_parent_path(
-                parent_id, space_id, nodes_dir, mpk_cache, parent_name_cache
-            )
+            rel_path = resolver.resolve(parent_id)
             files[name] = (rel_path, blob_id)
 
     return files
@@ -423,6 +494,25 @@ def _count_folders(
     return count
 
 
+def _log_dry_run(
+    copy_tasks: list[tuple[Path, Path]],
+    *,
+    force: bool,
+) -> None:
+    """Log which files would be copied in a dry run."""
+    would_copy_files: list[str] = []
+    for src, dst in copy_tasks:
+        if force or _needs_copy(src, dst):
+            would_copy_files.append(str(dst))
+    logger.info(
+        "  Dry run: %d would copy, %d would skip",
+        len(would_copy_files),
+        len(copy_tasks) - len(would_copy_files),
+    )
+    for filepath in would_copy_files:
+        logger.info("    %s", filepath)
+
+
 def _execute_copies(
     copy_tasks: list[tuple[Path, Path]],
     space_user: str,
@@ -432,14 +522,7 @@ def _execute_copies(
     """Run the copy tasks, either as dry-run or actual parallel copies."""
     if args.list or args.dry_run:
         if args.dry_run:
-            would_copy = sum(
-                1 for src, dst in copy_tasks if args.force or _needs_copy(src, dst)
-            )
-            logger.info(
-                "  Dry run: %d would copy, %d would skip",
-                would_copy,
-                len(copy_tasks) - would_copy,
-            )
+            _log_dry_run(copy_tasks, force=args.force)
         return
 
     with ThreadPoolExecutor(max_workers=args.jobs) as executor:

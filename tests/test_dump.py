@@ -476,6 +476,46 @@ class TestExecuteCopies:
         assert not dst.exists()
         assert stats.copied == 0
 
+    def test_dry_run_lists_files(self, tmp_path: Path, caplog) -> None:
+        """Dry run logs which files would be copied."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "blob"
+        src.write_bytes(b"data")
+        dst = tmp_path / "out" / "file.txt"
+
+        args = _make_fake_args(dry_run=True)
+        stats = _CopyStats()
+
+        with caplog.at_level(logging.INFO):
+            _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert "1 would copy" in caplog.text
+        assert str(dst) in caplog.text
+
+    def test_dry_run_force_lists_all(self, tmp_path: Path, caplog) -> None:
+        """Dry run with force lists all files as would-copy."""
+        import logging
+
+        from ocis_dumper.dump import _CopyStats, _execute_copies
+
+        src = tmp_path / "blob"
+        src.write_bytes(b"data")
+        dst = tmp_path / "out" / "file.txt"
+        dst.parent.mkdir(parents=True)
+        shutil.copy2(src, dst)
+
+        args = _make_fake_args(dry_run=True, force=True)
+        stats = _CopyStats()
+
+        with caplog.at_level(logging.INFO):
+            _execute_copies([(src, dst)], "testuser", args, stats)
+
+        assert "1 would copy" in caplog.text
+        assert str(dst) in caplog.text
+
     def test_list_mode_does_not_copy(self, tmp_path: Path) -> None:
         from ocis_dumper.dump import _CopyStats, _execute_copies
 
@@ -837,7 +877,7 @@ class TestResolveParentPath:
 
     def test_circular_reference(self, tmp_path: Path) -> None:
         """Circular parent references are detected and broken."""
-        from ocis_dumper.dump import _resolve_parent_path
+        from ocis_dumper.dump import _PathResolver
 
         nodes_dir = tmp_path / "nodes"
         space_id = "aabbccdd11223344aabbccdd11223344"
@@ -870,45 +910,122 @@ class TestResolveParentPath:
             },
         )
 
-        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
-        parent_name_cache: dict[str, str] = {}
-
-        result = _resolve_parent_path(
-            node_a_id, space_id, nodes_dir, mpk_cache, parent_name_cache
-        )
+        resolver = _PathResolver(space_id=space_id, nodes_dir=nodes_dir)
+        result = resolver.resolve(node_a_id)
         # Should not infinite loop; returns partial path
         assert "folderA" in result or "folderB" in result
 
     def test_missing_parent_mpk(self, tmp_path: Path) -> None:
         """Missing parent MPK logs warning and returns partial path."""
-        from ocis_dumper.dump import _resolve_parent_path
+        from ocis_dumper.dump import _PathResolver
 
         nodes_dir = tmp_path / "nodes"
         space_id = "aabbccdd11223344aabbccdd11223344"
         missing_parent_id = "dead111122223333444455556666777a"
 
-        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
-        parent_name_cache: dict[str, str] = {}
-
-        result = _resolve_parent_path(
-            missing_parent_id, space_id, nodes_dir, mpk_cache, parent_name_cache
-        )
+        resolver = _PathResolver(space_id=space_id, nodes_dir=nodes_dir)
+        result = resolver.resolve(missing_parent_id)
         assert result == "."
 
     def test_parent_is_space_root(self, tmp_path: Path) -> None:
         """Parent that equals space_id returns '.'."""
-        from ocis_dumper.dump import _resolve_parent_path
+        from ocis_dumper.dump import _PathResolver
 
         nodes_dir = tmp_path / "nodes"
         space_id = "aabbccdd11223344aabbccdd11223344"
 
-        mpk_cache: dict[Path, tuple[str | None, str, str]] = {}
-        parent_name_cache: dict[str, str] = {}
-
-        result = _resolve_parent_path(
-            space_id, space_id, nodes_dir, mpk_cache, parent_name_cache
-        )
+        resolver = _PathResolver(space_id=space_id, nodes_dir=nodes_dir)
+        result = resolver.resolve(space_id)
         assert result == "."
+
+    def test_cached_path_reused(self, tmp_path: Path) -> None:
+        """Second call for same parent_id uses cache."""
+        from ocis_dumper.dump import _PathResolver
+
+        nodes_dir = tmp_path / "nodes"
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        dir_id = "dddddddd11111111222222223333333a"
+
+        from ocis_dumper.common import fourslashes
+
+        dir_path = nodes_dir / fourslashes(dir_id)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{dir_path}.mpk"),
+            {
+                b"user.ocis.parentid": space_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"Documents",
+            },
+        )
+
+        resolver = _PathResolver(space_id=space_id, nodes_dir=nodes_dir)
+        result1 = resolver.resolve(dir_id)
+        result2 = resolver.resolve(dir_id)
+        assert result1 == result2
+        assert "Documents" in result1
+
+    def test_intermediate_cache_hit(self, tmp_path: Path) -> None:
+        """Resolving a child reuses the cached path of its ancestor."""
+        from ocis_dumper.dump import _PathResolver
+
+        nodes_dir = tmp_path / "nodes"
+        space_id = "aabbccdd11223344aabbccdd11223344"
+        grandparent_id = "aaaa111122223333444455556666777a"
+        parent_id = "bbbb111122223333444455556666777a"
+        child_id = "cccc111122223333444455556666777a"
+
+        from ocis_dumper.common import fourslashes
+
+        # grandparent -> space root
+        gp_path = nodes_dir / fourslashes(grandparent_id)
+        gp_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{gp_path}.mpk"),
+            {
+                b"user.ocis.parentid": space_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"Level1",
+            },
+        )
+
+        # parent -> grandparent
+        p_path = nodes_dir / fourslashes(parent_id)
+        p_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{p_path}.mpk"),
+            {
+                b"user.ocis.parentid": grandparent_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"Level2",
+            },
+        )
+
+        # child -> parent
+        c_path = nodes_dir / fourslashes(child_id)
+        c_path.mkdir(parents=True, exist_ok=True)
+        _write_mpk(
+            Path(f"{c_path}.mpk"),
+            {
+                b"user.ocis.parentid": parent_id.encode(),
+                b"user.ocis.blobid": b"N/A",
+                b"user.ocis.name": b"Level3",
+            },
+        )
+
+        resolver = _PathResolver(space_id=space_id, nodes_dir=nodes_dir)
+
+        # Resolve grandparent first — caches grandparent
+        r1 = resolver.resolve(grandparent_id)
+        assert r1 == "./Level1"
+
+        # Resolve child — should hit cached grandparent mid-walk
+        r2 = resolver.resolve(child_id)
+        assert r2 == "./Level1/Level2/Level3"
+
+        # Resolve parent — should be cached from intermediate caching
+        r3 = resolver.resolve(parent_id)
+        assert r3 == "./Level1/Level2"
 
 
 # ---------------------------------------------------------------------------
